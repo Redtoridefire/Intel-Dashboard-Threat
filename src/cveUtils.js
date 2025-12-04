@@ -366,6 +366,87 @@ export function getCVESeverityColor(cvss) {
   return { bg: 'bg-blue-500/20', text: 'text-blue-400', border: 'border-blue-500/30', label: 'LOW' };
 }
 
+// Map CVE to MITRE ATT&CK techniques
+export function mapCVEToMitre(cve) {
+  const techniques = [];
+  const vulnName = (cve.vulnerabilityName || '').toLowerCase();
+  const description = (cve.shortDescription || '').toLowerCase();
+  const vendor = (cve.vendorProject || '').toLowerCase();
+  const product = (cve.product || '').toLowerCase();
+
+  // Import MITRE techniques for reference
+  const T1190 = { id: 'T1190', name: 'Exploit Public-Facing Application', tactic: 'initialAccess', description: 'Exploit vulnerabilities in public apps' };
+  const T1059 = { id: 'T1059', name: 'Command and Scripting Interpreter', tactic: 'execution', description: 'Execute commands via interpreters' };
+  const T1203 = { id: 'T1203', name: 'Exploitation for Client Execution', tactic: 'execution', description: 'Exploit software vulnerabilities' };
+  const T1068 = { id: 'T1068', name: 'Exploitation for Privilege Escalation', tactic: 'privilegeEscalation', description: 'Exploit vulnerabilities to escalate privileges' };
+  const T1133 = { id: 'T1133', name: 'External Remote Services', tactic: 'initialAccess', description: 'Use external remote services' };
+  const T1210 = { id: 'T1210', name: 'Exploitation of Remote Services', tactic: 'lateralMovement', description: 'Exploit remote services' };
+  const T1078 = { id: 'T1078', name: 'Valid Accounts', tactic: 'initialAccess', description: 'Obtain and abuse credentials' };
+  const T1486 = { id: 'T1486', name: 'Data Encrypted for Impact', tactic: 'impact', description: 'Encrypt data (ransomware)' };
+  const T1027 = { id: 'T1027', name: 'Obfuscated Files or Information', tactic: 'defenseEvasion', description: 'Obfuscate malicious code' };
+
+  // Remote Code Execution (RCE)
+  if (vulnName.includes('remote code execution') || vulnName.includes('rce') || description.includes('remote code')) {
+    techniques.push(T1190);
+    techniques.push(T1203);
+    techniques.push(T1059);
+  }
+
+  // Command Injection
+  if (vulnName.includes('command injection') || description.includes('command injection')) {
+    techniques.push(T1059);
+    techniques.push(T1190);
+  }
+
+  // Privilege Escalation
+  if (vulnName.includes('privilege escalation') || description.includes('escalate') || description.includes('elevated')) {
+    techniques.push(T1068);
+  }
+
+  // Authentication Bypass
+  if (vulnName.includes('authentication bypass') || vulnName.includes('auth bypass') || description.includes('bypass authentication')) {
+    techniques.push(T1078);
+    techniques.push(T1190);
+  }
+
+  // VPN/Remote Access vulnerabilities
+  if (product.includes('vpn') || product.includes('gateway') || product.includes('remote access') ||
+      vendor.includes('fortinet') || vendor.includes('palo alto') || vendor.includes('citrix')) {
+    techniques.push(T1133);
+    techniques.push(T1190);
+  }
+
+  // Buffer Overflow
+  if (vulnName.includes('buffer overflow') || description.includes('buffer overflow')) {
+    techniques.push(T1203);
+    techniques.push(T1068);
+  }
+
+  // SQL Injection
+  if (vulnName.includes('sql injection') || description.includes('sql injection')) {
+    techniques.push(T1190);
+  }
+
+  // Lateral Movement capabilities
+  if (description.includes('lateral movement') || description.includes('pivot')) {
+    techniques.push(T1210);
+  }
+
+  // Ransomware-related
+  if (cve.knownRansomwareCampaignUse === 'Known') {
+    techniques.push(T1486);
+    techniques.push(T1027);
+  }
+
+  // Default for any public-facing vulnerability
+  if (techniques.length === 0) {
+    techniques.push(T1190);
+  }
+
+  // Get unique techniques
+  return [...new Map(techniques.map(t => [t.id, t])).values()];
+}
+
 // Format CVSS score with visual representation
 export function formatCVSS(cvss) {
   const severity = getCVESeverityColor(cvss);
