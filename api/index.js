@@ -543,6 +543,8 @@ async function handleThreats(req, res) {
       severity: ip.abuseScore >= 90 ? 'critical' : ip.abuseScore >= 70 ? 'high' : 'medium',
       timestamp: new Date(ip.lastReported).getTime(), abuseScore: ip.abuseScore
     }))).catch(e => errors.push(safeError(e, 'AbuseIPDB'))));
+  } else {
+    errors.push(safeError(new Error('ABUSEIPDB_API_KEY not configured'), 'AbuseIPDB'));
   }
 
   if (process.env.OTX_API_KEY) {
@@ -551,6 +553,8 @@ async function handleThreats(req, res) {
       description: p.description, severity: p.tlp === 'red' ? 'critical' : p.tlp === 'amber' ? 'high' : 'medium',
       timestamp: new Date(p.modified || p.created).getTime(), tags: p.tags, author: p.author
     }))).catch(e => errors.push(safeError(e, 'AlienVault OTX'))));
+  } else {
+    errors.push(safeError(new Error('OTX_API_KEY not configured'), 'AlienVault OTX'));
   }
 
   if (process.env.VIRUSTOTAL_API_KEY) {
@@ -563,6 +567,8 @@ async function handleThreats(req, res) {
       malicious: file.malicious,
       totalVendors: file.totalVendors
     }))).catch(e => errors.push(safeError(e, 'VirusTotal'))));
+  } else {
+    errors.push(safeError(new Error('VIRUSTOTAL_API_KEY not configured'), 'VirusTotal'));
   }
 
   if (process.env.SHODAN_API_KEY) {
@@ -576,6 +582,8 @@ async function handleThreats(req, res) {
       port: host.port,
       vulns: host.vulns
     }))).catch(e => errors.push(safeError(e, 'Shodan'))));
+  } else {
+    errors.push(safeError(new Error('SHODAN_API_KEY not configured'), 'Shodan'));
   }
 
   await Promise.all(fetches);

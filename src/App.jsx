@@ -105,6 +105,7 @@ export default function ThreatIntelDashboard() {
   const [filterDateRange, setFilterDateRange] = useState('all');
   const [filterCVECriticality, setFilterCVECriticality] = useState('all');
   const [filterRansomware, setFilterRansomware] = useState(false);
+  const [threatFeedErrors, setThreatFeedErrors] = useState([]);
   const [currentTime, setCurrentTime] = useState(new Date());
   const [loading, setLoading] = useState({ threats: true, feeds: true, cves: true, news: true });
   const [errors, setErrors] = useState({});
@@ -136,9 +137,11 @@ export default function ThreatIntelDashboard() {
       setLoading(prev => ({ ...prev, threats: true }));
       const data = await api.get('threats');
       setThreats(data.threats || []);
+      setThreatFeedErrors(data.errors || []);
       setErrors(prev => ({ ...prev, threats: null }));
     } catch (error) {
       setErrors(prev => ({ ...prev, threats: error.message }));
+      setThreatFeedErrors([]);
     } finally {
       setLoading(prev => ({ ...prev, threats: false }));
     }
@@ -423,6 +426,23 @@ export default function ThreatIntelDashboard() {
                     <div className="flex items-center justify-between pt-2 border-t border-slate-700">
                       <p className="text-xs text-slate-500 font-mono">Showing {filteredThreats.length} of {threats.length} threats</p>
                       <button onClick={() => { setSearchQuery(''); setFilterSeverity('all'); setFilterSource('all'); setFilterDateRange('all'); }} className="text-xs text-cyan-400 hover:text-cyan-300 font-mono">Clear All Filters</button>
+                    </div>
+                  </div>
+                )}
+
+                {threatFeedErrors.length > 0 && (
+                  <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg space-y-2">
+                    <div className="flex items-center gap-2 text-xs font-mono text-amber-300 uppercase">
+                      <span>Source availability</span>
+                      <span className="px-2 py-0.5 bg-amber-500/20 rounded">{threatFeedErrors.length}</span>
+                    </div>
+                    <div className="space-y-1 text-sm text-amber-200">
+                      {threatFeedErrors.map((issue, idx) => (
+                        <div key={`${issue.source}-${idx}`} className="flex items-center justify-between gap-2">
+                          <span className="font-semibold">{issue.source}</span>
+                          <span className="text-amber-100 text-xs text-right">{issue.error}</span>
+                        </div>
+                      ))}
                     </div>
                   </div>
                 )}
