@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts';
+import { mapThreatToMitre, generateMitigations, generateRemediation, getMitreTechniqueUrl, MITRE_TACTICS } from './mitreAttack';
 
 // API Configuration
 const API_BASE = '/api';
@@ -89,14 +90,18 @@ export default function ThreatIntelDashboard() {
   const [threats, setThreats] = useState([]);
   const [feeds, setFeeds] = useState([]);
   const [selectedThreat, setSelectedThreat] = useState(null);
+  const [threatDetailTab, setThreatDetailTab] = useState('overview');
   const [searchQuery, setSearchQuery] = useState('');
   const [filterSeverity, setFilterSeverity] = useState('all');
+  const [filterSource, setFilterSource] = useState('all');
+  const [filterDateRange, setFilterDateRange] = useState('all');
   const [currentTime, setCurrentTime] = useState(new Date());
   const [loading, setLoading] = useState({ threats: true, feeds: true });
   const [errors, setErrors] = useState({});
   const [unifiedSearchQuery, setUnifiedSearchQuery] = useState('');
   const [unifiedSearchResults, setUnifiedSearchResults] = useState(null);
   const [searchLoading, setSearchLoading] = useState(false);
+  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
 
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
@@ -147,7 +152,23 @@ export default function ThreatIntelDashboard() {
 
   const filteredThreats = threats.filter(t => {
     const matchesSearch = t.name?.toLowerCase().includes(searchQuery.toLowerCase()) || t.type?.toLowerCase().includes(searchQuery.toLowerCase()) || t.indicator?.toLowerCase().includes(searchQuery.toLowerCase());
-    return matchesSearch && (filterSeverity === 'all' || t.severity === filterSeverity);
+    const matchesSeverity = filterSeverity === 'all' || t.severity === filterSeverity;
+    const matchesSource = filterSource === 'all' || t.source === filterSource;
+
+    let matchesDate = true;
+    if (filterDateRange !== 'all' && t.timestamp) {
+      const now = Date.now();
+      const threatTime = t.timestamp;
+      switch(filterDateRange) {
+        case '1h': matchesDate = (now - threatTime) < 3600000; break;
+        case '24h': matchesDate = (now - threatTime) < 86400000; break;
+        case '7d': matchesDate = (now - threatTime) < 604800000; break;
+        case '30d': matchesDate = (now - threatTime) < 2592000000; break;
+        default: matchesDate = true;
+      }
+    }
+
+    return matchesSearch && matchesSeverity && matchesSource && matchesDate;
   });
 
   const stats = {
@@ -274,10 +295,56 @@ export default function ThreatIntelDashboard() {
         {activeTab === 'threats' && (
           <div className="space-y-6">
             <GlowCard className="p-4">
-              <div className="flex flex-wrap items-center gap-4">
-                <div className="flex-1 min-w-[300px]"><input type="text" placeholder="Search threats..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm font-mono focus:outline-none focus:border-cyan-500" /></div>
-                <div className="flex gap-2">{['all', 'critical', 'high', 'medium', 'low'].map(sev => <button key={sev} onClick={() => setFilterSeverity(sev)} className={`px-3 py-2 text-xs font-mono rounded-lg ${filterSeverity === sev ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30' : 'bg-slate-800 text-slate-400 border border-slate-700'}`}>{sev.toUpperCase()}</button>)}</div>
-                <button onClick={fetchThreats} className="px-4 py-2 bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 rounded-lg text-sm font-mono">↻ Refresh</button>
+              <div className="space-y-4">
+                <div className="flex flex-wrap items-center gap-4">
+                  <div className="flex-1 min-w-[300px]"><input type="text" placeholder="Search threats by name, type, or indicator..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm font-mono focus:outline-none focus:border-cyan-500" /></div>
+                  <button onClick={() => setShowAdvancedFilters(!showAdvancedFilters)} className="px-4 py-2 bg-slate-800 text-slate-400 border border-slate-700 rounded-lg text-sm font-mono hover:border-cyan-500">
+                    {showAdvancedFilters ? '▼' : '▶'} Filters
+                  </button>
+                  <button onClick={fetchThreats} className="px-4 py-2 bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 rounded-lg text-sm font-mono hover:bg-cyan-500/30">↻ Refresh</button>
+                </div>
+
+                {showAdvancedFilters && (
+                  <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700/50 space-y-4">
+                    <div>
+                      <p className="text-xs text-slate-500 font-mono uppercase mb-2">Severity</p>
+                      <div className="flex flex-wrap gap-2">
+                        {['all', 'critical', 'high', 'medium', 'low'].map(sev => (
+                          <button key={sev} onClick={() => setFilterSeverity(sev)} className={`px-3 py-1.5 text-xs font-mono rounded-lg transition-all ${filterSeverity === sev ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30' : 'bg-slate-800 text-slate-400 border border-slate-700 hover:border-slate-600'}`}>{sev.toUpperCase()}</button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div>
+                      <p className="text-xs text-slate-500 font-mono uppercase mb-2">Source</p>
+                      <div className="flex flex-wrap gap-2">
+                        {['all', ...Array.from(new Set(threats.map(t => t.source)))].map(src => (
+                          <button key={src} onClick={() => setFilterSource(src)} className={`px-3 py-1.5 text-xs font-mono rounded-lg transition-all ${filterSource === src ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30' : 'bg-slate-800 text-slate-400 border border-slate-700 hover:border-slate-600'}`}>{src.toUpperCase()}</button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div>
+                      <p className="text-xs text-slate-500 font-mono uppercase mb-2">Time Range</p>
+                      <div className="flex flex-wrap gap-2">
+                        {[
+                          { value: 'all', label: 'ALL TIME' },
+                          { value: '1h', label: 'LAST HOUR' },
+                          { value: '24h', label: 'LAST 24H' },
+                          { value: '7d', label: 'LAST 7 DAYS' },
+                          { value: '30d', label: 'LAST 30 DAYS' }
+                        ].map(range => (
+                          <button key={range.value} onClick={() => setFilterDateRange(range.value)} className={`px-3 py-1.5 text-xs font-mono rounded-lg transition-all ${filterDateRange === range.value ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30' : 'bg-slate-800 text-slate-400 border border-slate-700 hover:border-slate-600'}`}>{range.label}</button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between pt-2 border-t border-slate-700">
+                      <p className="text-xs text-slate-500 font-mono">Showing {filteredThreats.length} of {threats.length} threats</p>
+                      <button onClick={() => { setSearchQuery(''); setFilterSeverity('all'); setFilterSource('all'); setFilterDateRange('all'); }} className="text-xs text-cyan-400 hover:text-cyan-300 font-mono">Clear All Filters</button>
+                    </div>
+                  </div>
+                )}
               </div>
             </GlowCard>
             <GlowCard className="overflow-hidden">
@@ -370,24 +437,299 @@ export default function ThreatIntelDashboard() {
         )}
       </main>
 
-      {selectedThreat && (
-        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-6">
-          <div className="bg-slate-900 border border-slate-700 rounded-xl max-w-3xl w-full max-h-[90vh] overflow-y-auto">
-            <div className="sticky top-0 bg-slate-900 border-b border-slate-700 p-6 flex items-start justify-between">
-              <div><div className="flex items-center gap-3 mb-2"><SeverityBadge severity={selectedThreat.severity} /><span className="text-xs text-slate-500 font-mono">{selectedThreat.source}</span></div><h2 className="text-xl font-bold">{selectedThreat.name}</h2><p className="text-sm text-slate-400 mt-1">{selectedThreat.type}</p></div>
-              <button onClick={() => setSelectedThreat(null)} className="p-2 hover:bg-slate-800 rounded-lg">✕</button>
-            </div>
-            <div className="p-6 space-y-6">
-              {selectedThreat.indicator && <div className="p-4 bg-slate-800/50 rounded-lg"><p className="text-xs text-slate-500 font-mono uppercase mb-1">Indicator</p><p className="font-mono text-cyan-400 break-all">{selectedThreat.indicator}</p></div>}
-              {selectedThreat.tags?.length > 0 && <div><h3 className="text-sm font-mono text-slate-500 uppercase mb-3">Tags</h3><div className="flex flex-wrap gap-2">{selectedThreat.tags.map((tag, i) => <span key={i} className="px-3 py-1 bg-purple-500/20 text-purple-400 border border-purple-500/30 rounded-full text-sm">{tag}</span>)}</div></div>}
-              <div className="flex gap-3 pt-4 border-t border-slate-700">
-                <button onClick={() => navigator.clipboard.writeText(selectedThreat.indicator || selectedThreat.id)} className="flex-1 px-4 py-2 bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 rounded-lg font-medium hover:bg-cyan-500/30">Copy Indicator</button>
-                <button onClick={() => { setUnifiedSearchQuery(selectedThreat.indicator); setActiveTab('search'); setSelectedThreat(null); }} className="flex-1 px-4 py-2 bg-slate-700 text-white rounded-lg font-medium hover:bg-slate-600">Deep Search</button>
+      {selectedThreat && (() => {
+        const mitreData = mapThreatToMitre(selectedThreat);
+        const mitigations = generateMitigations(selectedThreat);
+        const remediation = generateRemediation(selectedThreat);
+
+        return (
+          <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-6 overflow-y-auto">
+            <div className="bg-slate-900 border border-slate-700 rounded-xl max-w-6xl w-full my-8">
+              <div className="sticky top-0 bg-slate-900 border-b border-slate-700 p-6 flex items-start justify-between z-10">
+                <div>
+                  <div className="flex items-center gap-3 mb-2">
+                    <SeverityBadge severity={selectedThreat.severity} />
+                    <span className="text-xs text-slate-500 font-mono">{selectedThreat.source}</span>
+                    <span className="text-xs text-slate-500 font-mono">ID: {selectedThreat.id}</span>
+                  </div>
+                  <h2 className="text-xl font-bold">{selectedThreat.name}</h2>
+                  <p className="text-sm text-slate-400 mt-1">{selectedThreat.type}</p>
+                </div>
+                <button onClick={() => { setSelectedThreat(null); setThreatDetailTab('overview'); }} className="p-2 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white">✕</button>
+              </div>
+
+              <div className="border-b border-slate-700">
+                <nav className="flex px-6">
+                  {[
+                    { id: 'overview', label: 'Overview', icon: '📊' },
+                    { id: 'mitre', label: 'MITRE ATT&CK', icon: '🎯' },
+                    { id: 'mitigations', label: 'Mitigations', icon: '🛡️' },
+                    { id: 'remediation', label: 'Remediation', icon: '🔧' }
+                  ].map(tab => (
+                    <button
+                      key={tab.id}
+                      onClick={() => setThreatDetailTab(tab.id)}
+                      className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
+                        threatDetailTab === tab.id
+                          ? 'border-cyan-500 text-cyan-400'
+                          : 'border-transparent text-slate-400 hover:text-white hover:border-slate-600'
+                      }`}
+                    >
+                      <span className="mr-2">{tab.icon}</span>
+                      {tab.label}
+                    </button>
+                  ))}
+                </nav>
+              </div>
+
+              <div className="p-6 max-h-[60vh] overflow-y-auto">
+                {threatDetailTab === 'overview' && (
+                  <div className="space-y-6">
+                    {selectedThreat.indicator && (
+                      <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700/50">
+                        <p className="text-xs text-slate-500 font-mono uppercase mb-2">Indicator of Compromise (IOC)</p>
+                        <p className="font-mono text-cyan-400 break-all text-lg">{selectedThreat.indicator}</p>
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700/50">
+                        <p className="text-xs text-slate-500 font-mono uppercase mb-2">First Seen</p>
+                        <p className="text-white">{selectedThreat.timestamp ? new Date(selectedThreat.timestamp).toLocaleString() : 'Unknown'}</p>
+                      </div>
+                      {selectedThreat.confidence && (
+                        <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700/50">
+                          <p className="text-xs text-slate-500 font-mono uppercase mb-2">Confidence Level</p>
+                          <p className="text-white">{selectedThreat.confidence}%</p>
+                        </div>
+                      )}
+                      {selectedThreat.country && (
+                        <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700/50">
+                          <p className="text-xs text-slate-500 font-mono uppercase mb-2">Country</p>
+                          <p className="text-white">{selectedThreat.country}</p>
+                        </div>
+                      )}
+                      {selectedThreat.abuseScore && (
+                        <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700/50">
+                          <p className="text-xs text-slate-500 font-mono uppercase mb-2">Abuse Score</p>
+                          <p className={`font-bold ${selectedThreat.abuseScore >= 90 ? 'text-red-400' : selectedThreat.abuseScore >= 70 ? 'text-orange-400' : 'text-yellow-400'}`}>
+                            {selectedThreat.abuseScore}%
+                          </p>
+                        </div>
+                      )}
+                    </div>
+
+                    {selectedThreat.description && (
+                      <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700/50">
+                        <p className="text-xs text-slate-500 font-mono uppercase mb-2">Description</p>
+                        <p className="text-slate-300 text-sm">{selectedThreat.description}</p>
+                      </div>
+                    )}
+
+                    {selectedThreat.tags?.length > 0 && (
+                      <div>
+                        <h3 className="text-sm font-mono text-slate-500 uppercase mb-3">Tags</h3>
+                        <div className="flex flex-wrap gap-2">
+                          {selectedThreat.tags.map((tag, i) => (
+                            <span key={i} className="px-3 py-1 bg-purple-500/20 text-purple-400 border border-purple-500/30 rounded-full text-sm">
+                              {tag}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="flex gap-3 pt-4 border-t border-slate-700">
+                      <button
+                        onClick={() => navigator.clipboard.writeText(selectedThreat.indicator || selectedThreat.id)}
+                        className="flex-1 px-4 py-2 bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 rounded-lg font-medium hover:bg-cyan-500/30"
+                      >
+                        📋 Copy Indicator
+                      </button>
+                      <button
+                        onClick={() => {
+                          setUnifiedSearchQuery(selectedThreat.indicator);
+                          setActiveTab('search');
+                          setSelectedThreat(null);
+                        }}
+                        className="flex-1 px-4 py-2 bg-slate-700 text-white rounded-lg font-medium hover:bg-slate-600"
+                      >
+                        🔍 Deep Search
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {threatDetailTab === 'mitre' && (
+                  <div className="space-y-6">
+                    <div className="p-4 bg-gradient-to-r from-red-500/10 to-orange-500/10 border border-red-500/30 rounded-lg">
+                      <h3 className="text-lg font-semibold text-red-400 mb-2">🎯 MITRE ATT&CK Techniques</h3>
+                      <p className="text-sm text-slate-400">
+                        This threat maps to the following MITRE ATT&CK techniques based on its characteristics and behavior patterns.
+                      </p>
+                    </div>
+
+                    <div className="grid gap-4">
+                      {mitreData.map((technique, idx) => {
+                        const tactic = MITRE_TACTICS[technique.tactic];
+                        return (
+                          <div key={idx} className="p-4 bg-slate-800/50 rounded-lg border border-slate-700/50 hover:border-cyan-500/50 transition-all">
+                            <div className="flex items-start justify-between mb-2">
+                              <div>
+                                <div className="flex items-center gap-2 mb-1">
+                                  <span className="px-2 py-0.5 bg-red-500/20 text-red-400 border border-red-500/30 rounded text-xs font-mono">
+                                    {technique.id}
+                                  </span>
+                                  {tactic && (
+                                    <span className="px-2 py-0.5 bg-orange-500/20 text-orange-400 border border-orange-500/30 rounded text-xs font-mono">
+                                      {tactic.id}
+                                    </span>
+                                  )}
+                                </div>
+                                <h4 className="font-semibold text-white">{technique.name}</h4>
+                                {tactic && <p className="text-xs text-slate-500 mt-1">Tactic: {tactic.name}</p>}
+                              </div>
+                              <a
+                                href={getMitreTechniqueUrl(technique.id)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-cyan-400 hover:text-cyan-300 text-sm"
+                              >
+                                View Details →
+                              </a>
+                            </div>
+                            <p className="text-sm text-slate-400">{technique.description}</p>
+                            {tactic && (
+                              <p className="text-xs text-slate-500 mt-2 italic">{tactic.description}</p>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700/50">
+                      <p className="text-xs text-slate-500 mb-2">Learn more about MITRE ATT&CK:</p>
+                      <a
+                        href="https://attack.mitre.org/"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-cyan-400 hover:text-cyan-300 text-sm"
+                      >
+                        https://attack.mitre.org/ →
+                      </a>
+                    </div>
+                  </div>
+                )}
+
+                {threatDetailTab === 'mitigations' && (
+                  <div className="space-y-6">
+                    <div className="p-4 bg-gradient-to-r from-green-500/10 to-emerald-500/10 border border-green-500/30 rounded-lg">
+                      <h3 className="text-lg font-semibold text-green-400 mb-2">🛡️ Mitigation Recommendations</h3>
+                      <p className="text-sm text-slate-400">
+                        Implement these security controls to protect against this threat.
+                      </p>
+                    </div>
+
+                    <div className="grid gap-4">
+                      {mitigations.map((mitigation, idx) => (
+                        <div key={idx} className="p-4 bg-slate-800/50 rounded-lg border border-slate-700/50">
+                          <div className="flex items-start justify-between mb-3">
+                            <div className="flex items-center gap-3">
+                              <span className={`px-2 py-1 rounded text-xs font-mono ${
+                                mitigation.priority === 'critical' ? 'bg-red-500/20 text-red-400 border border-red-500/30' :
+                                mitigation.priority === 'high' ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30' :
+                                'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30'
+                              }`}>
+                                {mitigation.priority.toUpperCase()}
+                              </span>
+                              <span className="text-xs text-slate-500 font-mono">{mitigation.category}</span>
+                            </div>
+                          </div>
+                          <h4 className="font-semibold text-white mb-2">{mitigation.title}</h4>
+                          <p className="text-sm text-slate-400 mb-3">{mitigation.description}</p>
+                          <div>
+                            <p className="text-xs text-slate-500 font-mono uppercase mb-2">Recommended Tools:</p>
+                            <div className="flex flex-wrap gap-2">
+                              {mitigation.tools.map((tool, i) => (
+                                <span key={i} className="px-2 py-1 bg-blue-500/20 text-blue-400 border border-blue-500/30 rounded text-xs">
+                                  {tool}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {threatDetailTab === 'remediation' && (
+                  <div className="space-y-6">
+                    <div className="p-4 bg-gradient-to-r from-blue-500/10 to-purple-500/10 border border-blue-500/30 rounded-lg">
+                      <h3 className="text-lg font-semibold text-blue-400 mb-2">🔧 Incident Response Playbook</h3>
+                      <p className="text-sm text-slate-400 mb-3">
+                        Follow this step-by-step remediation guide to respond to this threat.
+                      </p>
+                      <div className="flex gap-4 text-xs">
+                        <div><span className="text-slate-500">Threat:</span> <span className="text-white font-medium">{remediation.threat}</span></div>
+                        <div><span className="text-slate-500">Estimated Time:</span> <span className="text-cyan-400 font-medium">{remediation.estimatedTotalTime}</span></div>
+                      </div>
+                    </div>
+
+                    <div className="space-y-4">
+                      {remediation.steps.map((step, idx) => {
+                        const isNewPhase = idx === 0 || remediation.steps[idx - 1].phase !== step.phase;
+                        return (
+                          <div key={idx}>
+                            {isNewPhase && (
+                              <div className="flex items-center gap-3 mb-3">
+                                <div className="h-px flex-1 bg-gradient-to-r from-transparent via-cyan-500/50 to-transparent" />
+                                <h4 className="text-sm font-mono text-cyan-400 uppercase">{step.phase}</h4>
+                                <div className="h-px flex-1 bg-gradient-to-r from-cyan-500/50 via-transparent to-transparent" />
+                              </div>
+                            )}
+                            <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700/50">
+                              <div className="flex items-start gap-3 mb-3">
+                                <div className="flex-shrink-0 w-8 h-8 bg-cyan-500/20 border border-cyan-500/30 rounded-full flex items-center justify-center">
+                                  <span className="text-cyan-400 font-mono text-sm">{step.order}</span>
+                                </div>
+                                <div className="flex-1">
+                                  <h5 className="font-semibold text-white mb-1">{step.title}</h5>
+                                  <p className="text-sm text-slate-400 mb-3">{step.description}</p>
+                                  <div className="space-y-2">
+                                    {step.commands.map((cmd, i) => (
+                                      <div key={i} className="p-2 bg-slate-900 rounded border border-slate-700">
+                                        <p className="text-xs font-mono text-cyan-400">{cmd}</p>
+                                      </div>
+                                    ))}
+                                  </div>
+                                  <div className="flex gap-4 mt-3 text-xs">
+                                    <div><span className="text-slate-500">Time:</span> <span className="text-slate-300">{step.estimatedTime}</span></div>
+                                    <div><span className="text-slate-500">Role:</span> <span className="text-slate-300">{step.role}</span></div>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700/50">
+                      <p className="text-xs text-slate-500 font-mono uppercase mb-2">References</p>
+                      <ul className="space-y-1">
+                        {remediation.references.map((ref, i) => (
+                          <li key={i} className="text-sm text-slate-400">• {ref}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap');
