@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts';
 import { mapThreatToMitre, generateMitigations, generateRemediation, getMitreTechniqueUrl, MITRE_TACTICS } from './mitreAttack';
-import { mapThreatToCVEs, generateVulnerabilityBreakdown, generateCVEMitigation, formatCVSS, getCVELinks, getCVEPriority } from './cveUtils';
+import { mapThreatToCVEs, generateVulnerabilityBreakdown, generateCVEMitigation, formatCVSS, getCVELinks, getCVEPriority, mapCVEToMitre } from './cveUtils';
 
 // API Configuration
 const API_BASE = '/api';
@@ -91,18 +91,22 @@ export default function ThreatIntelDashboard() {
   const [threats, setThreats] = useState([]);
   const [feeds, setFeeds] = useState([]);
   const [cves, setCves] = useState([]);
+  const [news, setNews] = useState([]);
   const [selectedThreat, setSelectedThreat] = useState(null);
   const [selectedCVE, setSelectedCVE] = useState(null);
   const [threatDetailTab, setThreatDetailTab] = useState('overview');
+  const [cveDetailTab, setCveDetailTab] = useState('overview');
   const [searchQuery, setSearchQuery] = useState('');
   const [cveSearchQuery, setCveSearchQuery] = useState('');
+  const [newsSearchQuery, setNewsSearchQuery] = useState('');
+  const [newsCategoryFilter, setNewsCategoryFilter] = useState('all');
   const [filterSeverity, setFilterSeverity] = useState('all');
   const [filterSource, setFilterSource] = useState('all');
   const [filterDateRange, setFilterDateRange] = useState('all');
   const [filterCVECriticality, setFilterCVECriticality] = useState('all');
   const [filterRansomware, setFilterRansomware] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
-  const [loading, setLoading] = useState({ threats: true, feeds: true, cves: true });
+  const [loading, setLoading] = useState({ threats: true, feeds: true, cves: true, news: true });
   const [errors, setErrors] = useState({});
   const [unifiedSearchQuery, setUnifiedSearchQuery] = useState('');
   const [unifiedSearchResults, setUnifiedSearchResults] = useState(null);
@@ -153,9 +157,23 @@ export default function ThreatIntelDashboard() {
     }
   }, []);
 
-  useEffect(() => { fetchFeeds(); fetchThreats(); fetchCVEs(); }, [fetchFeeds, fetchThreats, fetchCVEs]);
+  const fetchNews = useCallback(async () => {
+    try {
+      setLoading(prev => ({ ...prev, news: true }));
+      const data = await api.get('news');
+      setNews(data.articles || []);
+      setErrors(prev => ({ ...prev, news: null }));
+    } catch (error) {
+      setErrors(prev => ({ ...prev, news: error.message }));
+    } finally {
+      setLoading(prev => ({ ...prev, news: false }));
+    }
+  }, []);
+
+  useEffect(() => { fetchFeeds(); fetchThreats(); fetchCVEs(); fetchNews(); }, [fetchFeeds, fetchThreats, fetchCVEs, fetchNews]);
   useEffect(() => { const interval = setInterval(fetchThreats, 60000); return () => clearInterval(interval); }, [fetchThreats]);
   useEffect(() => { const interval = setInterval(fetchCVEs, 300000); return () => clearInterval(interval); }, [fetchCVEs]); // Refresh CVEs every 5 minutes
+  useEffect(() => { const interval = setInterval(fetchNews, 300000); return () => clearInterval(interval); }, [fetchNews]); // Refresh news every 5 minutes
 
   const handleUnifiedSearch = async () => {
     if (!unifiedSearchQuery.trim()) return;
@@ -217,6 +235,16 @@ export default function ThreatIntelDashboard() {
     return matchesSearch && matchesRansomware && matchesCriticality;
   });
 
+  const filteredNews = news.filter(article => {
+    const matchesSearch = article.title?.toLowerCase().includes(newsSearchQuery.toLowerCase()) ||
+                         article.description?.toLowerCase().includes(newsSearchQuery.toLowerCase()) ||
+                         article.source?.toLowerCase().includes(newsSearchQuery.toLowerCase());
+
+    const matchesCategory = newsCategoryFilter === 'all' || article.category === newsCategoryFilter;
+
+    return matchesSearch && matchesCategory;
+  });
+
   const stats = {
     total: threats.length,
     critical: threats.filter(t => t.severity === 'critical').length,
@@ -258,7 +286,7 @@ export default function ThreatIntelDashboard() {
               </div>
               <div className="h-8 w-px bg-slate-700 mx-4" />
               <nav className="flex gap-1">
-                {['overview', 'threats', 'cve', 'search', 'feeds'].map(tab => (
+                {['overview', 'threats', 'cve', 'news', 'search', 'feeds'].map(tab => (
                   <button key={tab} onClick={() => setActiveTab(tab)} className={`px-4 py-2 text-sm font-medium rounded-lg transition-all ${activeTab === tab ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30' : 'text-slate-400 hover:text-white hover:bg-slate-800'}`}>
                     {tab === 'cve' ? 'CVE/KEV' : tab.charAt(0).toUpperCase() + tab.slice(1)}
                     {tab === 'cve' && stats.ransomwareCVEs > 0 && (
@@ -545,11 +573,14 @@ export default function ThreatIntelDashboard() {
                             onClick={() => setSelectedCVE(cve)}
                           >
                             <td className="px-6 py-4">
-                              <div className="flex items-center gap-2">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="px-2 py-0.5 bg-red-500/20 text-red-400 border border-red-500/30 rounded text-xs font-mono font-semibold">
+                                  🚨 KEV
+                                </span>
                                 <span className="text-sm font-mono text-cyan-400 font-semibold">{cve.cveId}</span>
                                 {cve.knownRansomwareCampaignUse === 'Known' && (
                                   <span className="px-1.5 py-0.5 bg-purple-500/20 text-purple-400 border border-purple-500/30 rounded text-xs">
-                                    🔒
+                                    🔒 RANSOMWARE
                                   </span>
                                 )}
                               </div>
@@ -639,6 +670,152 @@ export default function ThreatIntelDashboard() {
                 </div>
               </GlowCard>
             )}
+          </div>
+        )}
+
+        {activeTab === 'news' && (
+          <div className="space-y-6">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <MetricCard label="Total Articles" value={news.length} icon="📰" loading={loading.news} />
+              <MetricCard label="News Sources" value={filteredNews.filter((_, i, arr) => arr.findIndex(a => a.source === _.source) === i).length} icon="📡" loading={loading.news} />
+              <MetricCard label="Advisories" value={news.filter(n => n.category === 'advisory').length} icon="🏛️" loading={loading.news} />
+              <MetricCard label="Latest Update" value={news[0] ? new Date(news[0].publishedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--:--'} icon="⏱️" loading={loading.news} />
+            </div>
+
+            <GlowCard className="p-4">
+              <div className="space-y-4">
+                <div className="flex flex-wrap items-center gap-4">
+                  <div className="flex-1 min-w-[300px]">
+                    <input
+                      type="text"
+                      placeholder="Search news by title or description..."
+                      value={newsSearchQuery}
+                      onChange={(e) => setNewsSearchQuery(e.target.value)}
+                      className="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm focus:outline-none focus:border-cyan-500"
+                    />
+                  </div>
+                  <button
+                    onClick={fetchNews}
+                    className="px-4 py-2 bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 rounded-lg text-sm font-mono hover:bg-cyan-500/30"
+                  >
+                    ↻ Refresh
+                  </button>
+                </div>
+
+                <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700/50 space-y-4">
+                  <div>
+                    <p className="text-xs text-slate-500 font-mono uppercase mb-2">Category</p>
+                    <div className="flex flex-wrap gap-2">
+                      {[
+                        { value: 'all', label: 'ALL', icon: '📰' },
+                        { value: 'news', label: 'NEWS', icon: '📢' },
+                        { value: 'blog', label: 'BLOGS', icon: '✍️' },
+                        { value: 'advisory', label: 'ADVISORIES', icon: '🏛️' }
+                      ].map(cat => (
+                        <button
+                          key={cat.value}
+                          onClick={() => setNewsCategoryFilter(cat.value)}
+                          className={`px-3 py-1.5 text-xs font-mono rounded-lg transition-all ${
+                            newsCategoryFilter === cat.value
+                              ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30'
+                              : 'bg-slate-800 text-slate-400 border border-slate-700 hover:border-slate-600'
+                          }`}
+                        >
+                          {cat.icon} {cat.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between pt-2 border-t border-slate-700">
+                    <p className="text-xs text-slate-500 font-mono">
+                      Showing {filteredNews.length} of {news.length} articles
+                    </p>
+                    <button
+                      onClick={() => {
+                        setNewsSearchQuery('');
+                        setNewsCategoryFilter('all');
+                      }}
+                      className="px-3 py-1 bg-slate-700 hover:bg-slate-600 rounded text-xs text-slate-400"
+                    >
+                      Clear Filters
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </GlowCard>
+
+            {loading.news ? (
+              <div className="flex justify-center items-center py-12">
+                <div className="text-center space-y-2">
+                  <div className="inline-block animate-spin text-4xl">⚡</div>
+                  <p className="text-slate-400 font-mono text-sm">Loading cybersecurity news...</p>
+                </div>
+              </div>
+            ) : errors.news ? (
+              <div className="p-6 bg-red-500/10 border border-red-500/30 rounded-lg">
+                <p className="text-red-400">⚠️ Error loading news: {errors.news}</p>
+              </div>
+            ) : filteredNews.length === 0 ? (
+              <div className="p-12 text-center">
+                <p className="text-slate-400 text-lg mb-2">📰 No articles found</p>
+                <p className="text-slate-500 text-sm">Try adjusting your filters or search query</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {filteredNews.map((article, index) => (
+                  <GlowCard key={index} className="p-4 hover:border-cyan-500/50 transition-all cursor-pointer group">
+                    <a href={article.link} target="_blank" rel="noopener noreferrer" className="block">
+                      <div className="flex items-start gap-4">
+                        <div className="flex-shrink-0">
+                          <div className="w-12 h-12 bg-gradient-to-br from-cyan-500/20 to-blue-500/20 border border-cyan-500/30 rounded-lg flex items-center justify-center">
+                            <span className="text-2xl">
+                              {article.category === 'advisory' ? '🏛️' : article.category === 'blog' ? '✍️' : '📰'}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-2">
+                            <span className="px-2 py-0.5 bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 rounded text-xs font-mono">
+                              {article.source}
+                            </span>
+                            <span className="px-2 py-0.5 bg-slate-700 text-slate-400 rounded text-xs font-mono uppercase">
+                              {article.category}
+                            </span>
+                            <span className="text-xs text-slate-500 font-mono">
+                              {new Date(article.publishedAt).toLocaleString()}
+                            </span>
+                          </div>
+                          <h3 className="text-white font-semibold mb-2 group-hover:text-cyan-400 transition-colors line-clamp-2">
+                            {article.title}
+                          </h3>
+                          {article.description && (
+                            <p className="text-sm text-slate-400 line-clamp-2">{article.description}</p>
+                          )}
+                        </div>
+                        <div className="flex-shrink-0">
+                          <span className="text-slate-500 group-hover:text-cyan-400 transition-colors">→</span>
+                        </div>
+                      </div>
+                    </a>
+                  </GlowCard>
+                ))}
+              </div>
+            )}
+
+            <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700/50">
+              <p className="text-xs text-slate-500 font-mono uppercase mb-2">News Sources</p>
+              <div className="text-sm text-slate-400 space-y-1">
+                <p>• The Hacker News - Breaking cybersecurity news</p>
+                <p>• Bleeping Computer - Technology and security alerts</p>
+                <p>• Krebs on Security - In-depth security investigation</p>
+                <p>• CISA Alerts - Official US government advisories</p>
+                <p>• Threatpost - Enterprise security news</p>
+                <p>• SecurityWeek - Security news and analysis</p>
+                <p>• Dark Reading - Cybersecurity intelligence</p>
+                <p className="text-xs text-slate-600 mt-2">Note: News updates every 5 minutes. Twitter/X feed requires API access (not publicly available).</p>
+              </div>
+            </div>
           </div>
         )}
 
@@ -1238,6 +1415,7 @@ export default function ThreatIntelDashboard() {
         const breakdown = generateVulnerabilityBreakdown({ cveId: selectedCVE.cveId });
         const cveMitigation = generateCVEMitigation({ cveId: selectedCVE.cveId });
         const links = getCVELinks(selectedCVE.cveId);
+        const cveMitreData = mapCVEToMitre(selectedCVE);
 
         const today = new Date();
         const dueDate = new Date(selectedCVE.dueDate);
@@ -1247,10 +1425,13 @@ export default function ThreatIntelDashboard() {
 
         return (
           <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-6 overflow-y-auto">
-            <div className="bg-slate-900 border border-slate-700 rounded-xl max-w-6xl w-full my-8 max-h-[90vh] overflow-y-auto">
+            <div className="bg-slate-900 border border-slate-700 rounded-xl max-w-6xl w-full my-8">
               <div className="sticky top-0 bg-slate-900 border-b border-slate-700 p-6 flex items-start justify-between z-10">
                 <div className="flex-1">
-                  <div className="flex items-center gap-3 mb-3">
+                  <div className="flex items-center gap-3 mb-3 flex-wrap">
+                    <span className="px-3 py-1 bg-red-500/30 text-red-300 border-2 border-red-500/50 rounded-full text-sm font-mono font-bold animate-pulse">
+                      🚨 CISA KEV
+                    </span>
                     <h2 className="text-2xl font-bold font-mono text-cyan-400">{selectedCVE.cveId}</h2>
                     {selectedCVE.knownRansomwareCampaignUse === 'Known' && (
                       <span className="px-3 py-1 bg-purple-500/20 text-purple-400 border border-purple-500/30 rounded-full text-xs font-mono animate-pulse">
@@ -1270,128 +1451,295 @@ export default function ThreatIntelDashboard() {
                   <h3 className="text-lg font-semibold text-white mb-2">{selectedCVE.vulnerabilityName}</h3>
                   <p className="text-sm text-slate-400">{selectedCVE.vendorProject} - {selectedCVE.product}</p>
                 </div>
-                <button onClick={() => setSelectedCVE(null)} className="p-2 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white text-xl">
+                <button onClick={() => { setSelectedCVE(null); setCveDetailTab('overview'); }} className="p-2 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white text-xl">
                   ✕
                 </button>
               </div>
 
-              <div className="p-6 space-y-6">
-                {/* Quick Info */}
-                <div className="grid grid-cols-3 gap-4">
-                  <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700/50">
-                    <p className="text-xs text-slate-500 font-mono uppercase mb-1">Added to KEV</p>
-                    <p className="text-white font-semibold">{selectedCVE.dateAdded}</p>
-                  </div>
-                  <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700/50">
-                    <p className="text-xs text-slate-500 font-mono uppercase mb-1">Due Date</p>
-                    <p className={`font-semibold ${isOverdue ? 'text-red-400' : isUrgent ? 'text-orange-400' : 'text-white'}`}>
-                      {selectedCVE.dueDate}
-                    </p>
-                    <p className="text-xs text-slate-500 mt-1">
-                      {isOverdue ? `${Math.abs(daysUntilDue)} days overdue` : `${daysUntilDue} days remaining`}
-                    </p>
-                  </div>
-                  <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700/50">
-                    <p className="text-xs text-slate-500 font-mono uppercase mb-1">Ransomware Use</p>
-                    <p className={`font-semibold ${selectedCVE.knownRansomwareCampaignUse === 'Known' ? 'text-purple-400' : 'text-slate-400'}`}>
-                      {selectedCVE.knownRansomwareCampaignUse || 'Unknown'}
-                    </p>
-                  </div>
-                </div>
+              <div className="border-b border-slate-700">
+                <nav className="flex px-6 overflow-x-auto">
+                  {[
+                    { id: 'overview', label: 'Overview', icon: '📊' },
+                    { id: 'mitre', label: 'MITRE ATT&CK', icon: '🎯', badge: cveMitreData.length },
+                    { id: 'breakdown', label: 'Vulnerability', icon: '💥' },
+                    { id: 'mitigation', label: 'Mitigation', icon: '🛡️' }
+                  ].map(tab => (
+                    <button
+                      key={tab.id}
+                      onClick={() => setCveDetailTab(tab.id)}
+                      className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors flex items-center gap-2 ${
+                        cveDetailTab === tab.id
+                          ? 'border-cyan-500 text-cyan-400'
+                          : 'border-transparent text-slate-400 hover:text-white hover:border-slate-600'
+                      }`}
+                    >
+                      <span>{tab.icon}</span>
+                      <span>{tab.label}</span>
+                      {tab.badge && (
+                        <span className="px-1.5 py-0.5 bg-cyan-500 text-white text-xs rounded-full font-mono">
+                          {tab.badge}
+                        </span>
+                      )}
+                    </button>
+                  ))}
+                </nav>
+              </div>
 
-                {/* Description */}
-                <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700/50">
-                  <p className="text-xs text-slate-500 font-mono uppercase mb-2">Description</p>
-                  <p className="text-slate-300 text-sm leading-relaxed">{selectedCVE.shortDescription}</p>
-                </div>
+              <div className="p-6 max-h-[60vh] overflow-y-auto space-y-6">
+                {/* Overview Tab */}
+                {cveDetailTab === 'overview' && (
+                  <>
+                    {/* Quick Info */}
+                    <div className="grid grid-cols-3 gap-4">
+                      <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700/50">
+                        <p className="text-xs text-slate-500 font-mono uppercase mb-1">Added to KEV</p>
+                        <p className="text-white font-semibold">{selectedCVE.dateAdded}</p>
+                      </div>
+                      <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700/50">
+                        <p className="text-xs text-slate-500 font-mono uppercase mb-1">Due Date</p>
+                        <p className={`font-semibold ${isOverdue ? 'text-red-400' : isUrgent ? 'text-orange-400' : 'text-white'}`}>
+                          {selectedCVE.dueDate}
+                        </p>
+                        <p className="text-xs text-slate-500 mt-1">
+                          {isOverdue ? `${Math.abs(daysUntilDue)} days overdue` : `${daysUntilDue} days remaining`}
+                        </p>
+                      </div>
+                      <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700/50">
+                        <p className="text-xs text-slate-500 font-mono uppercase mb-1">Ransomware Use</p>
+                        <p className={`font-semibold ${selectedCVE.knownRansomwareCampaignUse === 'Known' ? 'text-purple-400' : 'text-slate-400'}`}>
+                          {selectedCVE.knownRansomwareCampaignUse || 'Unknown'}
+                        </p>
+                      </div>
+                    </div>
 
-                {/* CISA Required Action */}
-                <div className="p-4 bg-gradient-to-r from-red-500/10 to-rose-500/10 border border-red-500/30 rounded-lg">
-                  <p className="text-xs text-red-400 font-mono uppercase mb-2">⚠️ CISA Required Action</p>
-                  <p className="text-slate-300 text-sm leading-relaxed">{selectedCVE.requiredAction}</p>
-                </div>
+                    {/* Description */}
+                    <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700/50">
+                      <p className="text-xs text-slate-500 font-mono uppercase mb-2">Description</p>
+                      <p className="text-slate-300 text-sm leading-relaxed">{selectedCVE.shortDescription}</p>
+                    </div>
 
-                {/* Use the full breakdown components from cveUtils */}
-                <div>
-                  <h4 className="text-lg font-semibold text-red-400 mb-4">💥 Vulnerability Breakdown</h4>
+                    {/* CISA Required Action */}
+                    <div className="p-4 bg-gradient-to-r from-red-500/10 to-rose-500/10 border border-red-500/30 rounded-lg">
+                      <p className="text-xs text-red-400 font-mono uppercase mb-2">⚠️ CISA Required Action</p>
+                      <p className="text-slate-300 text-sm leading-relaxed">{selectedCVE.requiredAction}</p>
+                    </div>
+
+                    {/* External Links */}
+                    <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700/50">
+                      <p className="text-xs text-slate-500 font-mono uppercase mb-3">External Resources</p>
+                      <div className="grid grid-cols-2 gap-2">
+                        <a href={links.nvd} target="_blank" rel="noopener noreferrer" className="text-xs text-cyan-400 hover:text-cyan-300">
+                          📚 NVD Database →
+                        </a>
+                        <a href={links.cisa} target="_blank" rel="noopener noreferrer" className="text-xs text-cyan-400 hover:text-cyan-300">
+                          🏛️ CISA KEV Catalog →
+                        </a>
+                        <a href={links.github} target="_blank" rel="noopener noreferrer" className="text-xs text-cyan-400 hover:text-cyan-300">
+                          💻 GitHub Advisories →
+                        </a>
+                        <a href={links.exploitdb} target="_blank" rel="noopener noreferrer" className="text-xs text-cyan-400 hover:text-cyan-300">
+                          💣 ExploitDB →
+                        </a>
+                        {selectedCVE.notes && (
+                          <a href={selectedCVE.notes} target="_blank" rel="noopener noreferrer" className="text-xs text-cyan-400 hover:text-cyan-300 col-span-2">
+                            🔗 Vendor Advisory →
+                          </a>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Actions */}
+                    <div className="flex gap-3 pt-4 border-t border-slate-700">
+                      <button
+                        onClick={() => navigator.clipboard.writeText(selectedCVE.cveId)}
+                        className="flex-1 px-4 py-2 bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 rounded-lg font-medium hover:bg-cyan-500/30"
+                      >
+                        📋 Copy CVE ID
+                      </button>
+                      <button
+                        onClick={() => window.open(links.nvd, '_blank')}
+                        className="flex-1 px-4 py-2 bg-slate-700 text-white rounded-lg font-medium hover:bg-slate-600"
+                      >
+                        🔍 View in NVD
+                      </button>
+                    </div>
+                  </>
+                )}
+
+                {/* MITRE ATT&CK Tab */}
+                {cveDetailTab === 'mitre' && (
                   <div className="space-y-4">
-                    <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700/50">
-                      <p className="text-xs text-slate-500 font-mono uppercase mb-2">Flaw</p>
-                      <p className="text-sm text-slate-300">{breakdown.flaw}</p>
-                    </div>
-                    <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700/50">
-                      <p className="text-xs text-slate-500 font-mono uppercase mb-2">Mechanism</p>
-                      <p className="text-sm text-slate-300">{breakdown.mechanism}</p>
-                    </div>
-                    <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700/50">
-                      <p className="text-xs text-slate-500 font-mono uppercase mb-2">Outcome</p>
-                      <p className="text-sm text-slate-300">{breakdown.outcome}</p>
-                    </div>
-                    <div className="p-4 bg-gradient-to-r from-red-500/10 to-orange-500/10 border border-red-500/30 rounded-lg">
-                      <p className="text-xs text-slate-500 font-mono uppercase mb-2">Impact</p>
-                      <p className="text-sm text-red-300 font-medium">{breakdown.impact}</p>
-                    </div>
-                  </div>
-                </div>
+                    {cveMitreData.length > 0 ? (
+                      <>
+                        <div className="p-4 bg-gradient-to-r from-cyan-500/10 to-blue-500/10 border border-cyan-500/30 rounded-lg">
+                          <p className="text-sm text-slate-300">
+                            This vulnerability maps to <span className="text-cyan-400 font-semibold">{cveMitreData.length} MITRE ATT&CK technique{cveMitreData.length !== 1 ? 's' : ''}</span> based on its characteristics and exploitation patterns.
+                          </p>
+                        </div>
 
-                {/* Mitigation Summary */}
-                <div>
-                  <h4 className="text-lg font-semibold text-green-400 mb-4">🛡️ Mitigation Summary</h4>
-                  <div className="grid gap-3">
-                    <div className="p-3 bg-gradient-to-r from-red-500/10 to-orange-500/10 border border-red-500/30 rounded">
-                      <p className="text-xs font-mono uppercase text-red-400 mb-1">
-                        {cveMitigation.emergencyPatching.priority.toUpperCase()} - {cveMitigation.emergencyPatching.title}
-                      </p>
-                      <p className="text-sm text-slate-300">{cveMitigation.emergencyPatching.description}</p>
-                    </div>
-                    <div className="p-3 bg-slate-800/50 border border-orange-500/30 rounded">
-                      <p className="text-xs font-mono uppercase text-orange-400 mb-1">
-                        {cveMitigation.immediateAction.priority.toUpperCase()} - {cveMitigation.immediateAction.title}
-                      </p>
-                      <p className="text-sm text-slate-300">{cveMitigation.immediateAction.description}</p>
-                    </div>
-                  </div>
-                </div>
+                        {cveMitreData.map((technique) => {
+                          const tactic = MITRE_TACTICS[technique.tactic];
+                          return (
+                            <div key={technique.id} className="p-4 bg-slate-800/50 border border-slate-700/50 rounded-lg hover:border-cyan-500/50 transition-colors">
+                              <div className="flex items-start justify-between mb-3">
+                                <div>
+                                  <span className="inline-block px-2 py-1 bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 rounded text-xs font-mono font-semibold mb-2">
+                                    {technique.id}
+                                  </span>
+                                  <h4 className="text-lg font-semibold text-white">{technique.name}</h4>
+                                </div>
+                              </div>
+                              <p className="text-sm text-slate-400 mb-3">{technique.description}</p>
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs text-slate-500 font-mono uppercase">Tactic:</span>
+                                <span className="px-2 py-0.5 bg-purple-500/20 text-purple-400 border border-purple-500/30 rounded text-xs font-mono">
+                                  {tactic.id} - {tactic.name}
+                                </span>
+                              </div>
+                              <a
+                                href={`https://attack.mitre.org/techniques/${technique.id}/`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-block mt-3 text-xs text-cyan-400 hover:text-cyan-300"
+                              >
+                                📖 View on MITRE ATT&CK →
+                              </a>
+                            </div>
+                          );
+                        })}
 
-                {/* External Links */}
-                <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700/50">
-                  <p className="text-xs text-slate-500 font-mono uppercase mb-3">External Resources</p>
-                  <div className="grid grid-cols-2 gap-2">
-                    <a href={links.nvd} target="_blank" rel="noopener noreferrer" className="text-xs text-cyan-400 hover:text-cyan-300">
-                      📚 NVD Database →
-                    </a>
-                    <a href={links.cisa} target="_blank" rel="noopener noreferrer" className="text-xs text-cyan-400 hover:text-cyan-300">
-                      🏛️ CISA KEV Catalog →
-                    </a>
-                    <a href={links.github} target="_blank" rel="noopener noreferrer" className="text-xs text-cyan-400 hover:text-cyan-300">
-                      💻 GitHub Advisories →
-                    </a>
-                    <a href={links.exploitdb} target="_blank" rel="noopener noreferrer" className="text-xs text-cyan-400 hover:text-cyan-300">
-                      💣 ExploitDB →
-                    </a>
-                    {selectedCVE.notes && (
-                      <a href={selectedCVE.notes} target="_blank" rel="noopener noreferrer" className="text-xs text-cyan-400 hover:text-cyan-300 col-span-2">
-                        🔗 Vendor Advisory →
-                      </a>
+                        <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700/50">
+                          <p className="text-xs text-slate-500 font-mono uppercase mb-2">MITRE ATT&CK Resources</p>
+                          <div className="space-y-2">
+                            <a
+                              href="https://mitre-attack.github.io/attack-navigator/"
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="block text-sm text-cyan-400 hover:text-cyan-300"
+                            >
+                              🗺️ MITRE ATT&CK Navigator →
+                            </a>
+                            <a
+                              href="https://attack.mitre.org/"
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="block text-sm text-cyan-400 hover:text-cyan-300"
+                            >
+                              📚 MITRE ATT&CK Framework →
+                            </a>
+                          </div>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="p-8 text-center">
+                        <p className="text-slate-400">No MITRE ATT&CK techniques mapped for this CVE.</p>
+                      </div>
                     )}
                   </div>
-                </div>
+                )}
 
-                {/* Actions */}
-                <div className="flex gap-3 pt-4 border-t border-slate-700">
-                  <button
-                    onClick={() => navigator.clipboard.writeText(selectedCVE.cveId)}
-                    className="flex-1 px-4 py-2 bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 rounded-lg font-medium hover:bg-cyan-500/30"
-                  >
-                    📋 Copy CVE ID
-                  </button>
-                  <button
-                    onClick={() => window.open(links.nvd, '_blank')}
-                    className="flex-1 px-4 py-2 bg-slate-700 text-white rounded-lg font-medium hover:bg-slate-600"
-                  >
-                    🔍 View in NVD
-                  </button>
-                </div>
+                {/* Vulnerability Breakdown Tab */}
+                {cveDetailTab === 'breakdown' && (
+                  <div className="space-y-4">
+                    <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700/50">
+                      <p className="text-xs text-slate-500 font-mono uppercase mb-2">🔍 Flaw</p>
+                      <p className="text-sm text-slate-300 leading-relaxed">{breakdown.flaw}</p>
+                    </div>
+                    <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700/50">
+                      <p className="text-xs text-slate-500 font-mono uppercase mb-2">⚙️ Mechanism</p>
+                      <p className="text-sm text-slate-300 leading-relaxed">{breakdown.mechanism}</p>
+                    </div>
+                    <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700/50">
+                      <p className="text-xs text-slate-500 font-mono uppercase mb-2">💥 Outcome</p>
+                      <p className="text-sm text-slate-300 leading-relaxed">{breakdown.outcome}</p>
+                    </div>
+                    <div className="p-4 bg-gradient-to-r from-red-500/10 to-orange-500/10 border border-red-500/30 rounded-lg">
+                      <p className="text-xs text-red-400 font-mono uppercase mb-2">⚠️ Impact</p>
+                      <p className="text-sm text-red-300 font-medium leading-relaxed">{breakdown.impact}</p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Mitigation Tab */}
+                {cveDetailTab === 'mitigation' && (
+                  <div className="space-y-4">
+                    {/* Emergency Patching */}
+                    <div className="p-4 bg-gradient-to-r from-red-500/10 to-orange-500/10 border border-red-500/30 rounded-lg">
+                      <div className="flex items-center gap-2 mb-3">
+                        <span className="px-2 py-1 bg-red-500/30 text-red-300 border border-red-500/50 rounded text-xs font-mono font-bold">
+                          {cveMitigation.emergencyPatching.priority.toUpperCase()}
+                        </span>
+                        <h4 className="text-lg font-semibold text-red-300">{cveMitigation.emergencyPatching.title}</h4>
+                      </div>
+                      <p className="text-sm text-slate-300 leading-relaxed mb-3">{cveMitigation.emergencyPatching.description}</p>
+                      <div className="space-y-2">
+                        {cveMitigation.emergencyPatching.steps.map((step, idx) => (
+                          <div key={idx} className="flex items-start gap-2">
+                            <span className="text-red-400 font-bold">•</span>
+                            <p className="text-sm text-slate-300">{step}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Immediate Action */}
+                    <div className="p-4 bg-gradient-to-r from-orange-500/10 to-yellow-500/10 border border-orange-500/30 rounded-lg">
+                      <div className="flex items-center gap-2 mb-3">
+                        <span className="px-2 py-1 bg-orange-500/30 text-orange-300 border border-orange-500/50 rounded text-xs font-mono font-bold">
+                          {cveMitigation.immediateAction.priority.toUpperCase()}
+                        </span>
+                        <h4 className="text-lg font-semibold text-orange-300">{cveMitigation.immediateAction.title}</h4>
+                      </div>
+                      <p className="text-sm text-slate-300 leading-relaxed mb-3">{cveMitigation.immediateAction.description}</p>
+                      <div className="space-y-2">
+                        {cveMitigation.immediateAction.steps.map((step, idx) => (
+                          <div key={idx} className="flex items-start gap-2">
+                            <span className="text-orange-400 font-bold">•</span>
+                            <p className="text-sm text-slate-300">{step}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Post-Patch Actions */}
+                    <div className="p-4 bg-slate-800/50 border border-slate-700/50 rounded-lg">
+                      <div className="flex items-center gap-2 mb-3">
+                        <span className="px-2 py-1 bg-green-500/30 text-green-300 border border-green-500/50 rounded text-xs font-mono font-bold">
+                          {cveMitigation.postPatch.priority.toUpperCase()}
+                        </span>
+                        <h4 className="text-lg font-semibold text-green-300">{cveMitigation.postPatch.title}</h4>
+                      </div>
+                      <p className="text-sm text-slate-300 leading-relaxed mb-3">{cveMitigation.postPatch.description}</p>
+                      <div className="space-y-2">
+                        {cveMitigation.postPatch.steps.map((step, idx) => (
+                          <div key={idx} className="flex items-start gap-2">
+                            <span className="text-green-400 font-bold">•</span>
+                            <p className="text-sm text-slate-300">{step}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Detection Methods */}
+                    <div className="p-4 bg-slate-800/50 border border-cyan-500/30 rounded-lg">
+                      <div className="flex items-center gap-2 mb-3">
+                        <span className="px-2 py-1 bg-cyan-500/30 text-cyan-300 border border-cyan-500/50 rounded text-xs font-mono font-bold">
+                          INFO
+                        </span>
+                        <h4 className="text-lg font-semibold text-cyan-300">{cveMitigation.detection.title}</h4>
+                      </div>
+                      <p className="text-sm text-slate-300 leading-relaxed mb-3">{cveMitigation.detection.description}</p>
+                      <div className="space-y-2">
+                        {cveMitigation.detection.methods.map((method, idx) => (
+                          <div key={idx} className="flex items-start gap-2">
+                            <span className="text-cyan-400 font-bold">•</span>
+                            <p className="text-sm text-slate-300">{method}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>

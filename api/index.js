@@ -551,6 +551,142 @@ async function handleCVESearch(req, res) {
 }
 
 // ============================================
+// CYBERSECURITY NEWS FEEDS
+// ============================================
+const NEWS_SOURCES = [
+  {
+    name: 'The Hacker News',
+    url: 'https://feeds.feedburner.com/TheHackersNews',
+    description: 'Breaking cybersecurity news and analysis',
+    category: 'news'
+  },
+  {
+    name: 'Bleeping Computer',
+    url: 'https://www.bleepingcomputer.com/feed/',
+    description: 'Technology news and security alerts',
+    category: 'news'
+  },
+  {
+    name: 'Krebs on Security',
+    url: 'https://krebsonsecurity.com/feed/',
+    description: 'In-depth security news and investigation',
+    category: 'blog'
+  },
+  {
+    name: 'CISA Alerts',
+    url: 'https://www.cisa.gov/cybersecurity-advisories/all.xml',
+    description: 'Official US government cybersecurity advisories',
+    category: 'advisory'
+  },
+  {
+    name: 'Threatpost',
+    url: 'https://threatpost.com/feed/',
+    description: 'Enterprise security news',
+    category: 'news'
+  },
+  {
+    name: 'SecurityWeek',
+    url: 'https://www.securityweek.com/feed/',
+    description: 'Security news and analysis',
+    category: 'news'
+  },
+  {
+    name: 'Dark Reading',
+    url: 'https://www.darkreading.com/rss.xml',
+    description: 'Cybersecurity intelligence and insights',
+    category: 'news'
+  }
+];
+
+async function parseRSSFeed(source) {
+  try {
+    const response = await axios.get(source.url, {
+      timeout: 10000,
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; ThreatIntelDashboard/1.0)' }
+    });
+
+    const xml = response.data;
+    const articles = [];
+
+    // Simple RSS/Atom parser (extract items/entries)
+    const itemRegex = /<item>[\s\S]*?<\/item>/gi;
+    const entryRegex = /<entry>[\s\S]*?<\/entry>/gi;
+
+    const items = xml.match(itemRegex) || xml.match(entryRegex) || [];
+
+    for (const item of items.slice(0, 10)) { // Limit to 10 articles per source
+      // Extract fields using regex (simple parser)
+      const title = item.match(/<title(?:[^>]*)>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/title>/i)?.[1]?.trim() || '';
+      const link = item.match(/<link(?:[^>]*)>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/link>/i)?.[1]?.trim() ||
+                   item.match(/<link[^>]*href=["']([^"']+)["']/i)?.[1]?.trim() || '';
+      const description = item.match(/<description(?:[^>]*)>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/description>/i)?.[1]?.trim() ||
+                         item.match(/<summary(?:[^>]*)>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/summary>/i)?.[1]?.trim() || '';
+      const pubDate = item.match(/<pubDate(?:[^>]*)>(.*?)<\/pubDate>/i)?.[1]?.trim() ||
+                     item.match(/<published(?:[^>]*)>(.*?)<\/published>/i)?.[1]?.trim() ||
+                     item.match(/<updated(?:[^>]*)>(.*?)<\/updated>/i)?.[1]?.trim() || '';
+
+      if (title && link) {
+        // Clean HTML tags from description
+        const cleanDescription = description.replace(/<[^>]*>/g, '').replace(/&[^;]+;/g, ' ').trim().substring(0, 300);
+
+        articles.push({
+          source: source.name,
+          category: source.category,
+          title: title.replace(/&[^;]+;/g, ' ').trim(),
+          link,
+          description: cleanDescription,
+          publishedAt: pubDate ? new Date(pubDate).getTime() : Date.now()
+        });
+      }
+    }
+
+    return articles;
+  } catch (error) {
+    console.error(`Error fetching ${source.name}:`, error.message);
+    return [];
+  }
+}
+
+async function fetchCyberNews(limit = 50) {
+  const cacheKey = 'news:all';
+  const cached = cache.get(cacheKey);
+  if (cached) return cached;
+
+  const allArticles = [];
+  const fetchPromises = NEWS_SOURCES.map(source =>
+    parseRSSFeed(source).then(articles => allArticles.push(...articles))
+  );
+
+  await Promise.all(fetchPromises);
+
+  // Sort by published date (newest first)
+  allArticles.sort((a, b) => b.publishedAt - a.publishedAt);
+
+  // Limit results
+  const limitedArticles = allArticles.slice(0, Math.min(limit, 100));
+
+  cache.set(cacheKey, limitedArticles);
+  return limitedArticles;
+}
+
+async function handleNews(req, res) {
+  try {
+    const limit = parseInt(req.query.limit) || 50;
+    const articles = await fetchCyberNews(limit);
+
+    res.json({
+      timestamp: new Date().toISOString(),
+      totalArticles: articles.length,
+      sources: NEWS_SOURCES.map(s => ({ name: s.name, category: s.category, description: s.description })),
+      articles
+    });
+  } catch (error) {
+    console.error('News fetch error:', error);
+    res.status(500).json({ error: 'Failed to fetch cybersecurity news' });
+  }
+}
+
+// ============================================
 // MAIN HANDLER
 // ============================================
 module.exports = async (req, res) => {
@@ -588,7 +724,8 @@ module.exports = async (req, res) => {
       case 'search': return handleSearch(req, res);
       case 'cves': return handleCVEs(req, res);
       case 'cve-search': return handleCVESearch(req, res);
-      default: return res.status(404).json({ error: 'Endpoint not found', available: ['health', 'feeds', 'threats', 'search', 'cves', 'cve-search'] });
+      case 'news': return handleNews(req, res);
+      default: return res.status(404).json({ error: 'Endpoint not found', available: ['health', 'feeds', 'threats', 'search', 'cves', 'cve-search', 'news'] });
     }
   } catch (error) {
     console.error('Unhandled error:', error);
