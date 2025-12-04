@@ -90,14 +90,19 @@ export default function ThreatIntelDashboard() {
   const [activeTab, setActiveTab] = useState('overview');
   const [threats, setThreats] = useState([]);
   const [feeds, setFeeds] = useState([]);
+  const [cves, setCves] = useState([]);
   const [selectedThreat, setSelectedThreat] = useState(null);
+  const [selectedCVE, setSelectedCVE] = useState(null);
   const [threatDetailTab, setThreatDetailTab] = useState('overview');
   const [searchQuery, setSearchQuery] = useState('');
+  const [cveSearchQuery, setCveSearchQuery] = useState('');
   const [filterSeverity, setFilterSeverity] = useState('all');
   const [filterSource, setFilterSource] = useState('all');
   const [filterDateRange, setFilterDateRange] = useState('all');
+  const [filterCVECriticality, setFilterCVECriticality] = useState('all');
+  const [filterRansomware, setFilterRansomware] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
-  const [loading, setLoading] = useState({ threats: true, feeds: true });
+  const [loading, setLoading] = useState({ threats: true, feeds: true, cves: true });
   const [errors, setErrors] = useState({});
   const [unifiedSearchQuery, setUnifiedSearchQuery] = useState('');
   const [unifiedSearchResults, setUnifiedSearchResults] = useState(null);
@@ -135,8 +140,22 @@ export default function ThreatIntelDashboard() {
     }
   }, []);
 
-  useEffect(() => { fetchFeeds(); fetchThreats(); }, [fetchFeeds, fetchThreats]);
+  const fetchCVEs = useCallback(async () => {
+    try {
+      setLoading(prev => ({ ...prev, cves: true }));
+      const data = await api.get('cves');
+      setCves(data.cves || []);
+      setErrors(prev => ({ ...prev, cves: null }));
+    } catch (error) {
+      setErrors(prev => ({ ...prev, cves: error.message }));
+    } finally {
+      setLoading(prev => ({ ...prev, cves: false }));
+    }
+  }, []);
+
+  useEffect(() => { fetchFeeds(); fetchThreats(); fetchCVEs(); }, [fetchFeeds, fetchThreats, fetchCVEs]);
   useEffect(() => { const interval = setInterval(fetchThreats, 60000); return () => clearInterval(interval); }, [fetchThreats]);
+  useEffect(() => { const interval = setInterval(fetchCVEs, 300000); return () => clearInterval(interval); }, [fetchCVEs]); // Refresh CVEs every 5 minutes
 
   const handleUnifiedSearch = async () => {
     if (!unifiedSearchQuery.trim()) return;
@@ -172,11 +191,39 @@ export default function ThreatIntelDashboard() {
     return matchesSearch && matchesSeverity && matchesSource && matchesDate;
   });
 
+  const filteredCVEs = cves.filter(cve => {
+    const matchesSearch = cve.cveId?.toLowerCase().includes(cveSearchQuery.toLowerCase()) ||
+                         cve.vulnerabilityName?.toLowerCase().includes(cveSearchQuery.toLowerCase()) ||
+                         cve.vendorProject?.toLowerCase().includes(cveSearchQuery.toLowerCase()) ||
+                         cve.product?.toLowerCase().includes(cveSearchQuery.toLowerCase());
+
+    const matchesRansomware = !filterRansomware || cve.knownRansomwareCampaignUse === 'Known';
+
+    let matchesCriticality = true;
+    if (filterCVECriticality !== 'all') {
+      const today = new Date();
+      const dueDate = new Date(cve.dueDate);
+      const daysUntilDue = Math.ceil((dueDate - today) / (1000 * 60 * 60 * 24));
+
+      switch(filterCVECriticality) {
+        case 'overdue': matchesCriticality = daysUntilDue < 0; break;
+        case 'urgent': matchesCriticality = daysUntilDue >= 0 && daysUntilDue <= 7; break;
+        case 'high': matchesCriticality = daysUntilDue > 7 && daysUntilDue <= 30; break;
+        case 'medium': matchesCriticality = daysUntilDue > 30; break;
+        default: matchesCriticality = true;
+      }
+    }
+
+    return matchesSearch && matchesRansomware && matchesCriticality;
+  });
+
   const stats = {
     total: threats.length,
     critical: threats.filter(t => t.severity === 'critical').length,
     high: threats.filter(t => t.severity === 'high').length,
-    connectedFeeds: feeds.filter(f => f.status === 'connected').length
+    connectedFeeds: feeds.filter(f => f.status === 'connected').length,
+    totalCVEs: cves.length,
+    ransomwareCVEs: cves.filter(c => c.knownRansomwareCampaignUse === 'Known').length
   };
 
   const attackTypeData = React.useMemo(() => {
@@ -211,9 +258,14 @@ export default function ThreatIntelDashboard() {
               </div>
               <div className="h-8 w-px bg-slate-700 mx-4" />
               <nav className="flex gap-1">
-                {['overview', 'threats', 'search', 'feeds'].map(tab => (
+                {['overview', 'threats', 'cve', 'search', 'feeds'].map(tab => (
                   <button key={tab} onClick={() => setActiveTab(tab)} className={`px-4 py-2 text-sm font-medium rounded-lg transition-all ${activeTab === tab ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30' : 'text-slate-400 hover:text-white hover:bg-slate-800'}`}>
-                    {tab.charAt(0).toUpperCase() + tab.slice(1)}
+                    {tab === 'cve' ? 'CVE/KEV' : tab.charAt(0).toUpperCase() + tab.slice(1)}
+                    {tab === 'cve' && stats.ransomwareCVEs > 0 && (
+                      <span className="ml-2 px-1.5 py-0.5 bg-red-500 text-white text-xs rounded-full font-mono">
+                        {stats.ransomwareCVEs}
+                      </span>
+                    )}
                   </button>
                 ))}
               </nav>
@@ -366,6 +418,187 @@ export default function ThreatIntelDashboard() {
                     </tbody>
                   </table>
                   {filteredThreats.length === 0 && <div className="p-12 text-center text-slate-500">No threats match your filters</div>}
+                </div>
+              )}
+            </GlowCard>
+          </div>
+        )}
+
+        {activeTab === 'cve' && (
+          <div className="space-y-6">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <MetricCard label="Total KEVs" value={stats.totalCVEs} icon="💥" loading={loading.cves} />
+              <MetricCard label="Ransomware" value={stats.ransomwareCVEs} icon="🔒" loading={loading.cves} />
+              <MetricCard label="Filtered" value={filteredCVEs.length} icon="🔍" loading={loading.cves} />
+              <MetricCard label="CISA Catalog" value={stats.totalCVEs} icon="🏛️" loading={loading.cves} />
+            </div>
+
+            <GlowCard className="p-4">
+              <div className="space-y-4">
+                <div className="flex flex-wrap items-center gap-4">
+                  <div className="flex-1 min-w-[300px]">
+                    <input
+                      type="text"
+                      placeholder="Search CVE ID, vulnerability, vendor, or product..."
+                      value={cveSearchQuery}
+                      onChange={(e) => setCveSearchQuery(e.target.value)}
+                      className="w-full px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm font-mono focus:outline-none focus:border-cyan-500"
+                    />
+                  </div>
+                  <button
+                    onClick={fetchCVEs}
+                    className="px-4 py-2 bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 rounded-lg text-sm font-mono hover:bg-cyan-500/30"
+                  >
+                    ↻ Refresh
+                  </button>
+                </div>
+
+                <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700/50 space-y-4">
+                  <div>
+                    <p className="text-xs text-slate-500 font-mono uppercase mb-2">Criticality (By Due Date)</p>
+                    <div className="flex flex-wrap gap-2">
+                      {[
+                        { value: 'all', label: 'ALL' },
+                        { value: 'overdue', label: 'OVERDUE' },
+                        { value: 'urgent', label: 'URGENT (≤7 days)' },
+                        { value: 'high', label: 'HIGH (≤30 days)' },
+                        { value: 'medium', label: 'MEDIUM (>30 days)' }
+                      ].map(crit => (
+                        <button
+                          key={crit.value}
+                          onClick={() => setFilterCVECriticality(crit.value)}
+                          className={`px-3 py-1.5 text-xs font-mono rounded-lg transition-all ${
+                            filterCVECriticality === crit.value
+                              ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30'
+                              : 'bg-slate-800 text-slate-400 border border-slate-700 hover:border-slate-600'
+                          }`}
+                        >
+                          {crit.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={filterRansomware}
+                        onChange={(e) => setFilterRansomware(e.target.checked)}
+                        className="w-4 h-4 rounded border-slate-700 bg-slate-800 text-cyan-500 focus:ring-cyan-500 focus:ring-offset-slate-900"
+                      />
+                      <span className="text-sm text-slate-300">Show only ransomware-linked CVEs</span>
+                      <span className="px-2 py-0.5 bg-purple-500/20 text-purple-400 border border-purple-500/30 rounded text-xs font-mono">
+                        🔒 RANSOMWARE
+                      </span>
+                    </label>
+                  </div>
+
+                  <div className="flex items-center justify-between pt-2 border-t border-slate-700">
+                    <p className="text-xs text-slate-500 font-mono">
+                      Showing {filteredCVEs.length} of {cves.length} CVEs
+                    </p>
+                    <button
+                      onClick={() => {
+                        setCveSearchQuery('');
+                        setFilterCVECriticality('all');
+                        setFilterRansomware(false);
+                      }}
+                      className="text-xs text-cyan-400 hover:text-cyan-300 font-mono"
+                    >
+                      Clear All Filters
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </GlowCard>
+
+            <GlowCard className="overflow-hidden">
+              {errors.cves ? (
+                <ErrorMessage message={errors.cves} onRetry={fetchCVEs} />
+              ) : loading.cves ? (
+                <div className="p-6"><LoadingSkeleton rows={8} /></div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead className="bg-slate-800/50 border-b border-slate-700">
+                      <tr>
+                        <th className="px-6 py-4 text-left text-xs font-mono text-slate-500 uppercase">CVE ID</th>
+                        <th className="px-6 py-4 text-left text-xs font-mono text-slate-500 uppercase">Vulnerability</th>
+                        <th className="px-6 py-4 text-left text-xs font-mono text-slate-500 uppercase">Vendor / Product</th>
+                        <th className="px-6 py-4 text-left text-xs font-mono text-slate-500 uppercase">Due Date</th>
+                        <th className="px-6 py-4 text-left text-xs font-mono text-slate-500 uppercase">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800">
+                      {filteredCVEs.slice(0, 50).map(cve => {
+                        const today = new Date();
+                        const dueDate = new Date(cve.dueDate);
+                        const daysUntilDue = Math.ceil((dueDate - today) / (1000 * 60 * 60 * 24));
+                        const isOverdue = daysUntilDue < 0;
+                        const isUrgent = daysUntilDue >= 0 && daysUntilDue <= 7;
+
+                        return (
+                          <tr
+                            key={cve.cveId}
+                            className="hover:bg-slate-800/30 cursor-pointer"
+                            onClick={() => setSelectedCVE(cve)}
+                          >
+                            <td className="px-6 py-4">
+                              <div className="flex items-center gap-2">
+                                <span className="text-sm font-mono text-cyan-400 font-semibold">{cve.cveId}</span>
+                                {cve.knownRansomwareCampaignUse === 'Known' && (
+                                  <span className="px-1.5 py-0.5 bg-purple-500/20 text-purple-400 border border-purple-500/30 rounded text-xs">
+                                    🔒
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+                            <td className="px-6 py-4">
+                              <p className="font-medium text-sm max-w-md truncate">{cve.vulnerabilityName}</p>
+                              <p className="text-xs text-slate-500 mt-1 max-w-md truncate">{cve.shortDescription}</p>
+                            </td>
+                            <td className="px-6 py-4">
+                              <p className="text-sm text-slate-300">{cve.vendorProject}</p>
+                              <p className="text-xs text-slate-500">{cve.product}</p>
+                            </td>
+                            <td className="px-6 py-4">
+                              <p className={`text-sm font-mono ${
+                                isOverdue ? 'text-red-400 font-bold' : isUrgent ? 'text-orange-400 font-semibold' : 'text-slate-400'
+                              }`}>
+                                {cve.dueDate}
+                              </p>
+                              <p className="text-xs text-slate-500 mt-1">
+                                {isOverdue ? `${Math.abs(daysUntilDue)} days overdue` : `${daysUntilDue} days left`}
+                              </p>
+                            </td>
+                            <td className="px-6 py-4">
+                              {isOverdue ? (
+                                <span className="px-2 py-1 bg-red-500/20 text-red-400 border border-red-500/30 rounded text-xs font-mono">
+                                  OVERDUE
+                                </span>
+                              ) : isUrgent ? (
+                                <span className="px-2 py-1 bg-orange-500/20 text-orange-400 border border-orange-500/30 rounded text-xs font-mono animate-pulse">
+                                  URGENT
+                                </span>
+                              ) : daysUntilDue <= 30 ? (
+                                <span className="px-2 py-1 bg-yellow-500/20 text-yellow-400 border border-yellow-500/30 rounded text-xs font-mono">
+                                  HIGH
+                                </span>
+                              ) : (
+                                <span className="px-2 py-1 bg-blue-500/20 text-blue-400 border border-blue-500/30 rounded text-xs font-mono">
+                                  MEDIUM
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                  {filteredCVEs.length === 0 && (
+                    <div className="p-12 text-center text-slate-500">No CVEs match your filters</div>
+                  )}
                 </div>
               )}
             </GlowCard>
@@ -995,6 +1228,170 @@ export default function ThreatIntelDashboard() {
                     </div>
                   </div>
                 )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {selectedCVE && (() => {
+        const breakdown = generateVulnerabilityBreakdown({ cveId: selectedCVE.cveId });
+        const cveMitigation = generateCVEMitigation({ cveId: selectedCVE.cveId });
+        const links = getCVELinks(selectedCVE.cveId);
+
+        const today = new Date();
+        const dueDate = new Date(selectedCVE.dueDate);
+        const daysUntilDue = Math.ceil((dueDate - today) / (1000 * 60 * 60 * 24));
+        const isOverdue = daysUntilDue < 0;
+        const isUrgent = daysUntilDue >= 0 && daysUntilDue <= 7;
+
+        return (
+          <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-6 overflow-y-auto">
+            <div className="bg-slate-900 border border-slate-700 rounded-xl max-w-6xl w-full my-8 max-h-[90vh] overflow-y-auto">
+              <div className="sticky top-0 bg-slate-900 border-b border-slate-700 p-6 flex items-start justify-between z-10">
+                <div className="flex-1">
+                  <div className="flex items-center gap-3 mb-3">
+                    <h2 className="text-2xl font-bold font-mono text-cyan-400">{selectedCVE.cveId}</h2>
+                    {selectedCVE.knownRansomwareCampaignUse === 'Known' && (
+                      <span className="px-3 py-1 bg-purple-500/20 text-purple-400 border border-purple-500/30 rounded-full text-xs font-mono animate-pulse">
+                        🔒 RANSOMWARE
+                      </span>
+                    )}
+                    {isOverdue ? (
+                      <span className="px-3 py-1 bg-red-500/20 text-red-400 border border-red-500/30 rounded-full text-xs font-mono animate-pulse">
+                        ⚠️ OVERDUE
+                      </span>
+                    ) : isUrgent && (
+                      <span className="px-3 py-1 bg-orange-500/20 text-orange-400 border border-orange-500/30 rounded-full text-xs font-mono animate-pulse">
+                        🚨 URGENT
+                      </span>
+                    )}
+                  </div>
+                  <h3 className="text-lg font-semibold text-white mb-2">{selectedCVE.vulnerabilityName}</h3>
+                  <p className="text-sm text-slate-400">{selectedCVE.vendorProject} - {selectedCVE.product}</p>
+                </div>
+                <button onClick={() => setSelectedCVE(null)} className="p-2 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white text-xl">
+                  ✕
+                </button>
+              </div>
+
+              <div className="p-6 space-y-6">
+                {/* Quick Info */}
+                <div className="grid grid-cols-3 gap-4">
+                  <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700/50">
+                    <p className="text-xs text-slate-500 font-mono uppercase mb-1">Added to KEV</p>
+                    <p className="text-white font-semibold">{selectedCVE.dateAdded}</p>
+                  </div>
+                  <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700/50">
+                    <p className="text-xs text-slate-500 font-mono uppercase mb-1">Due Date</p>
+                    <p className={`font-semibold ${isOverdue ? 'text-red-400' : isUrgent ? 'text-orange-400' : 'text-white'}`}>
+                      {selectedCVE.dueDate}
+                    </p>
+                    <p className="text-xs text-slate-500 mt-1">
+                      {isOverdue ? `${Math.abs(daysUntilDue)} days overdue` : `${daysUntilDue} days remaining`}
+                    </p>
+                  </div>
+                  <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700/50">
+                    <p className="text-xs text-slate-500 font-mono uppercase mb-1">Ransomware Use</p>
+                    <p className={`font-semibold ${selectedCVE.knownRansomwareCampaignUse === 'Known' ? 'text-purple-400' : 'text-slate-400'}`}>
+                      {selectedCVE.knownRansomwareCampaignUse || 'Unknown'}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Description */}
+                <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700/50">
+                  <p className="text-xs text-slate-500 font-mono uppercase mb-2">Description</p>
+                  <p className="text-slate-300 text-sm leading-relaxed">{selectedCVE.shortDescription}</p>
+                </div>
+
+                {/* CISA Required Action */}
+                <div className="p-4 bg-gradient-to-r from-red-500/10 to-rose-500/10 border border-red-500/30 rounded-lg">
+                  <p className="text-xs text-red-400 font-mono uppercase mb-2">⚠️ CISA Required Action</p>
+                  <p className="text-slate-300 text-sm leading-relaxed">{selectedCVE.requiredAction}</p>
+                </div>
+
+                {/* Use the full breakdown components from cveUtils */}
+                <div>
+                  <h4 className="text-lg font-semibold text-red-400 mb-4">💥 Vulnerability Breakdown</h4>
+                  <div className="space-y-4">
+                    <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700/50">
+                      <p className="text-xs text-slate-500 font-mono uppercase mb-2">Flaw</p>
+                      <p className="text-sm text-slate-300">{breakdown.flaw}</p>
+                    </div>
+                    <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700/50">
+                      <p className="text-xs text-slate-500 font-mono uppercase mb-2">Mechanism</p>
+                      <p className="text-sm text-slate-300">{breakdown.mechanism}</p>
+                    </div>
+                    <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700/50">
+                      <p className="text-xs text-slate-500 font-mono uppercase mb-2">Outcome</p>
+                      <p className="text-sm text-slate-300">{breakdown.outcome}</p>
+                    </div>
+                    <div className="p-4 bg-gradient-to-r from-red-500/10 to-orange-500/10 border border-red-500/30 rounded-lg">
+                      <p className="text-xs text-slate-500 font-mono uppercase mb-2">Impact</p>
+                      <p className="text-sm text-red-300 font-medium">{breakdown.impact}</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Mitigation Summary */}
+                <div>
+                  <h4 className="text-lg font-semibold text-green-400 mb-4">🛡️ Mitigation Summary</h4>
+                  <div className="grid gap-3">
+                    <div className="p-3 bg-gradient-to-r from-red-500/10 to-orange-500/10 border border-red-500/30 rounded">
+                      <p className="text-xs font-mono uppercase text-red-400 mb-1">
+                        {cveMitigation.emergencyPatching.priority.toUpperCase()} - {cveMitigation.emergencyPatching.title}
+                      </p>
+                      <p className="text-sm text-slate-300">{cveMitigation.emergencyPatching.description}</p>
+                    </div>
+                    <div className="p-3 bg-slate-800/50 border border-orange-500/30 rounded">
+                      <p className="text-xs font-mono uppercase text-orange-400 mb-1">
+                        {cveMitigation.immediateAction.priority.toUpperCase()} - {cveMitigation.immediateAction.title}
+                      </p>
+                      <p className="text-sm text-slate-300">{cveMitigation.immediateAction.description}</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* External Links */}
+                <div className="p-4 bg-slate-800/50 rounded-lg border border-slate-700/50">
+                  <p className="text-xs text-slate-500 font-mono uppercase mb-3">External Resources</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <a href={links.nvd} target="_blank" rel="noopener noreferrer" className="text-xs text-cyan-400 hover:text-cyan-300">
+                      📚 NVD Database →
+                    </a>
+                    <a href={links.cisa} target="_blank" rel="noopener noreferrer" className="text-xs text-cyan-400 hover:text-cyan-300">
+                      🏛️ CISA KEV Catalog →
+                    </a>
+                    <a href={links.github} target="_blank" rel="noopener noreferrer" className="text-xs text-cyan-400 hover:text-cyan-300">
+                      💻 GitHub Advisories →
+                    </a>
+                    <a href={links.exploitdb} target="_blank" rel="noopener noreferrer" className="text-xs text-cyan-400 hover:text-cyan-300">
+                      💣 ExploitDB →
+                    </a>
+                    {selectedCVE.notes && (
+                      <a href={selectedCVE.notes} target="_blank" rel="noopener noreferrer" className="text-xs text-cyan-400 hover:text-cyan-300 col-span-2">
+                        🔗 Vendor Advisory →
+                      </a>
+                    )}
+                  </div>
+                </div>
+
+                {/* Actions */}
+                <div className="flex gap-3 pt-4 border-t border-slate-700">
+                  <button
+                    onClick={() => navigator.clipboard.writeText(selectedCVE.cveId)}
+                    className="flex-1 px-4 py-2 bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 rounded-lg font-medium hover:bg-cyan-500/30"
+                  >
+                    📋 Copy CVE ID
+                  </button>
+                  <button
+                    onClick={() => window.open(links.nvd, '_blank')}
+                    className="flex-1 px-4 py-2 bg-slate-700 text-white rounded-lg font-medium hover:bg-slate-600"
+                  >
+                    🔍 View in NVD
+                  </button>
+                </div>
               </div>
             </div>
           </div>
