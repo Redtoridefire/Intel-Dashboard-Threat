@@ -287,6 +287,90 @@ async function urlhausHost(host) {
   return normalized;
 }
 
+async function vtRecentMalware(limit = 20) {
+  limit = Math.min(Math.max(parseInt(limit) || 20, 1), 40);
+  const cacheKey = `vt:recent:${limit}`;
+  const cached = cache.get(cacheKey);
+  if (cached) return cached;
+  if (!process.env.VIRUSTOTAL_API_KEY) throw new Error('VIRUSTOTAL_API_KEY not configured');
+
+  // Use VirusTotal search API to find recent malicious files
+  const response = await axios.get('https://www.virustotal.com/api/v3/intelligence/search', {
+    headers: { 'x-apikey': process.env.VIRUSTOTAL_API_KEY },
+    params: {
+      query: 'type:file positives:10+',
+      limit,
+      order: 'creation_date-'
+    },
+    timeout: 10000
+  });
+
+  const normalized = response.data.data?.map(file => ({
+    source: 'VirusTotal',
+    id: file.id,
+    hash: file.attributes.sha256,
+    type: file.attributes.type_description || 'Malicious File',
+    name: file.attributes.meaningful_name || file.attributes.names?.[0] || 'Unknown',
+    malicious: file.attributes.last_analysis_stats?.malicious || 0,
+    totalVendors: file.attributes.last_analysis_stats ?
+      Object.values(file.attributes.last_analysis_stats).reduce((a, b) => a + b, 0) : 0,
+    firstSeen: file.attributes.first_submission_date,
+    tags: file.attributes.tags?.slice(0, 10) || []
+  })) || [];
+
+  cache.set(cacheKey, normalized);
+  return normalized;
+}
+
+async function shodanVulnerable(limit = 20) {
+  limit = Math.min(Math.max(parseInt(limit) || 20, 1), 100);
+  const cacheKey = `shodan:vulnerable:${limit}`;
+  const cached = cache.get(cacheKey);
+  if (cached) return cached;
+  if (!process.env.SHODAN_API_KEY) throw new Error('SHODAN_API_KEY not configured');
+
+  // Search for systems with known CVEs or vulnerable services
+  const queries = [
+    'vuln:CVE-2023',
+    'vuln:CVE-2024',
+    'port:445 os:windows',  // SMB on Windows
+    'port:3389 os:windows', // RDP exposed
+  ];
+
+  const results = [];
+  for (const query of queries.slice(0, 2)) { // Limit to 2 queries to avoid rate limits
+    try {
+      const response = await axios.get('https://api.shodan.io/shodan/host/search', {
+        params: {
+          key: process.env.SHODAN_API_KEY,
+          query,
+          minify: true
+        },
+        timeout: 10000
+      });
+
+      response.data.matches?.slice(0, Math.ceil(limit / 2)).forEach(match => {
+        results.push({
+          source: 'Shodan',
+          ip: match.ip_str,
+          port: match.port,
+          org: match.org || 'Unknown',
+          country: match.location?.country_name || match.location?.country_code || 'Unknown',
+          product: match.product || 'Unknown Service',
+          vulns: match.vulns || [],
+          timestamp: match.timestamp ? new Date(match.timestamp).getTime() : Date.now()
+        });
+      });
+    } catch (error) {
+      console.error(`Shodan query error for "${query}":`, error.message);
+    }
+  }
+
+  const normalized = results.slice(0, limit);
+  cache.set(cacheKey, normalized);
+  return normalized;
+}
+
 async function shodanIP(ip) {
   if (!validators.isValidIP(ip)) throw new Error('Invalid IP format');
   const cacheKey = `shodan:ip:${ip}`;
@@ -467,6 +551,31 @@ async function handleThreats(req, res) {
       description: p.description, severity: p.tlp === 'red' ? 'critical' : p.tlp === 'amber' ? 'high' : 'medium',
       timestamp: new Date(p.modified || p.created).getTime(), tags: p.tags, author: p.author
     }))).catch(e => errors.push(safeError(e, 'AlienVault OTX'))));
+  }
+
+  if (process.env.VIRUSTOTAL_API_KEY) {
+    fetches.push(vtRecentMalware(15).then(files => files.forEach(file => threats.push({
+      id: `vt-${file.id}`, source: 'VirusTotal', type: file.type,
+      name: file.name, indicator: file.hash,
+      severity: file.malicious >= 40 ? 'critical' : file.malicious >= 20 ? 'high' : 'medium',
+      timestamp: file.firstSeen ? file.firstSeen * 1000 : Date.now(),
+      tags: file.tags,
+      malicious: file.malicious,
+      totalVendors: file.totalVendors
+    }))).catch(e => errors.push(safeError(e, 'VirusTotal'))));
+  }
+
+  if (process.env.SHODAN_API_KEY) {
+    fetches.push(shodanVulnerable(15).then(hosts => hosts.forEach(host => threats.push({
+      id: `shodan-${host.ip}-${host.port}`, source: 'Shodan', type: 'Vulnerable Host',
+      name: `${host.product} on ${host.ip}:${host.port}`,
+      indicator: host.ip, country: host.country, org: host.org,
+      severity: host.vulns?.length > 0 ? 'critical' : 'medium',
+      timestamp: host.timestamp || Date.now(),
+      tags: host.vulns?.slice(0, 5) || [],
+      port: host.port,
+      vulns: host.vulns
+    }))).catch(e => errors.push(safeError(e, 'Shodan'))));
   }
 
   await Promise.all(fetches);
