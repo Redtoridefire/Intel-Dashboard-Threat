@@ -344,6 +344,67 @@ async function threatfoxSearch(searchTerm) {
   return normalized;
 }
 
+async function cisaKevCatalog(limit = 100) {
+  limit = Math.min(Math.max(parseInt(limit) || 100, 1), 500);
+  const cacheKey = `cisa:kev:${limit}`;
+  const cached = cache.get(cacheKey);
+  if (cached) return cached;
+
+  const response = await axios.get('https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json', { timeout: 15000 });
+  const vulnerabilities = response.data.vulnerabilities || [];
+
+  const normalized = vulnerabilities.slice(0, limit).map(vuln => ({
+    source: 'CISA KEV',
+    cveId: vuln.cveID,
+    vendorProject: validators.sanitize(vuln.vendorProject),
+    product: validators.sanitize(vuln.product),
+    vulnerabilityName: validators.sanitize(vuln.vulnerabilityName),
+    dateAdded: vuln.dateAdded,
+    shortDescription: validators.sanitize(vuln.shortDescription),
+    requiredAction: validators.sanitize(vuln.requiredAction),
+    dueDate: vuln.dueDate,
+    knownRansomwareCampaignUse: vuln.knownRansomwareCampaignUse,
+    notes: vuln.notes
+  }));
+
+  cache.set(cacheKey, normalized);
+  return normalized;
+}
+
+async function cisaKevSearch(cveId) {
+  cveId = validators.sanitize(cveId).toUpperCase();
+  if (!cveId.match(/^CVE-\d{4}-\d{4,}$/)) throw new Error('Invalid CVE ID format');
+
+  const cacheKey = `cisa:kev:search:${cveId}`;
+  const cached = cache.get(cacheKey);
+  if (cached) return cached;
+
+  const response = await axios.get('https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json', { timeout: 15000 });
+  const vulnerabilities = response.data.vulnerabilities || [];
+
+  const found = vulnerabilities.find(v => v.cveID === cveId);
+
+  if (!found) return { source: 'CISA KEV', found: false, cveId };
+
+  const normalized = {
+    source: 'CISA KEV',
+    found: true,
+    cveId: found.cveID,
+    vendorProject: validators.sanitize(found.vendorProject),
+    product: validators.sanitize(found.product),
+    vulnerabilityName: validators.sanitize(found.vulnerabilityName),
+    dateAdded: found.dateAdded,
+    shortDescription: validators.sanitize(found.shortDescription),
+    requiredAction: validators.sanitize(found.requiredAction),
+    dueDate: found.dueDate,
+    knownRansomwareCampaignUse: found.knownRansomwareCampaignUse,
+    notes: found.notes
+  };
+
+  cache.set(cacheKey, normalized);
+  return normalized;
+}
+
 // ============================================
 // ROUTE HANDLERS
 // ============================================
@@ -366,7 +427,8 @@ async function handleFeeds(req, res) {
       { name: 'VirusTotal', configured: !!process.env.VIRUSTOTAL_API_KEY, status: process.env.VIRUSTOTAL_API_KEY ? 'connected' : 'api_key_required', free: true, rateLimit: '500/day', docs: 'https://docs.virustotal.com/' },
       { name: 'Shodan', configured: !!process.env.SHODAN_API_KEY, status: process.env.SHODAN_API_KEY ? 'connected' : 'api_key_required', free: true, rateLimit: 'Limited', docs: 'https://developer.shodan.io/api' },
       { name: 'URLhaus', configured: true, status: 'connected', free: true, rateLimit: 'Unlimited', docs: 'https://urlhaus-api.abuse.ch/' },
-      { name: 'ThreatFox', configured: true, status: 'connected', free: true, rateLimit: 'Unlimited', docs: 'https://threatfox.abuse.ch/api/' }
+      { name: 'ThreatFox', configured: true, status: 'connected', free: true, rateLimit: 'Unlimited', docs: 'https://threatfox.abuse.ch/api/' },
+      { name: 'CISA KEV', configured: true, status: 'connected', free: true, rateLimit: 'Unlimited', docs: 'https://www.cisa.gov/known-exploited-vulnerabilities-catalog' }
     ]
   });
 }
@@ -453,6 +515,41 @@ async function handleSearch(req, res) {
   res.json(results);
 }
 
+async function handleCVEs(req, res) {
+  try {
+    const limit = parseInt(req.query.limit) || 100;
+    const cves = await cisaKevCatalog(limit);
+
+    res.json({
+      timestamp: new Date().toISOString(),
+      totalCVEs: cves.length,
+      catalogInfo: {
+        title: 'CISA Known Exploited Vulnerabilities Catalog',
+        catalogVersion: new Date().toISOString().split('T')[0],
+        count: cves.length
+      },
+      cves
+    });
+  } catch (error) {
+    console.error('CVE fetch error:', error);
+    res.status(500).json({ error: 'Failed to fetch CVE catalog' });
+  }
+}
+
+async function handleCVESearch(req, res) {
+  if (req.method !== 'POST') return res.status(405).json({ error: 'POST method required' });
+
+  const { cveId } = req.body || {};
+  if (!cveId) return res.status(400).json({ error: 'CVE ID required' });
+
+  try {
+    const result = await cisaKevSearch(cveId);
+    res.json(result);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+}
+
 // ============================================
 // MAIN HANDLER
 // ============================================
@@ -489,7 +586,9 @@ module.exports = async (req, res) => {
       case 'feeds': return handleFeeds(req, res);
       case 'threats': return handleThreats(req, res);
       case 'search': return handleSearch(req, res);
-      default: return res.status(404).json({ error: 'Endpoint not found', available: ['health', 'feeds', 'threats', 'search'] });
+      case 'cves': return handleCVEs(req, res);
+      case 'cve-search': return handleCVESearch(req, res);
+      default: return res.status(404).json({ error: 'Endpoint not found', available: ['health', 'feeds', 'threats', 'search', 'cves', 'cve-search'] });
     }
   } catch (error) {
     console.error('Unhandled error:', error);
